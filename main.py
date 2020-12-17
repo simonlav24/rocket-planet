@@ -1,5 +1,6 @@
 from math import fabs, sqrt, cos, sin, pi, floor, ceil
 from random import uniform, randint, choice
+from nameGen import getName
 from vector import *
 import pygame
 #from pygame import gfxdraw
@@ -35,8 +36,8 @@ BLACK = (0,0,0); WHITE = (255,255,255); EMPTY = (0,0,0,0)
 DISC = [(0,0), (0,1), (0,-1), (1,0), (-1,0), (1,1), (-1,1), (1,-1), (-1,-1)]
 CLICK_PERIOD = fps * 10
 DIAGONAL = sqrt(winWidth * winWidth + winHeight * winHeight)
-digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
+# digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+# letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
 CHUNK_SIZE = 1000
 CHUNK_BORDER = 0.1 * CHUNK_SIZE
 # game parameters
@@ -259,12 +260,7 @@ class Planet:
 		self.radius = radius
 		self.selected = False
 		if name == "":
-			self.name = ""
-			for i in range(5):
-				if i <= 2:
-					self.name += choice(letters)
-				else:
-					self.name += choice([choice(letters), choice(digits)])
+			self.name = getName(randint(3,7))
 		else:
 			self.name = name
 		self.location = None
