@@ -16,11 +16,6 @@ winHeight = 500
 win = pygame.display.set_mode((winWidth, winHeight))
 whiteBuff = pygame.Surface((winWidth, winHeight)).convert_alpha()
 
-BLACK = (0,0,0); WHITE = (255,255,255); EMPTY = (0,0,0,0)
-
-DISC = [(0,0), (0,1), (0,-1), (1,0), (-1,0), (1,1), (-1,1), (1,-1), (-1,-1)]
-CLICK_PERIOD = fps * 10
-
 ##
 # ideas:
 # deliveries 
@@ -35,23 +30,39 @@ CLICK_PERIOD = fps * 10
 # to do:
 # fix asteroids
 
+# macros
+BLACK = (0,0,0); WHITE = (255,255,255); EMPTY = (0,0,0,0)
+DISC = [(0,0), (0,1), (0,-1), (1,0), (-1,0), (1,1), (-1,1), (1,-1), (-1,-1)]
+CLICK_PERIOD = fps * 10
+DIAGONAL = sqrt(winWidth * winWidth + winHeight * winHeight)
 digits = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
 letters = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"]
+CHUNK_SIZE = 1000
+CHUNK_BORDER = 0.1 * CHUNK_SIZE
+# game parameters
+gravityConst = 400
+fuelMult = 0.4
 
-################################################################################ transformations
+# variables
+cam = Vector()
+phys = []
+globalTime = 0
+wakeChunks = []
+currentPlayerChunk = (-555, -555)
+
+################################################################################ funcs
 
 def isOutside(pos, border = 10):
-	if pos[0] < upLeft[0] - border or pos[0] > downRight[0] + border or pos[1] < upLeft[1] - border or pos[1] > downRight[1] + border:
+	if pos[0] < upLeft()[0] - border or pos[0] > downRight()[0] + border or pos[1] < upLeft()[1] - border or pos[1] > downRight()[1] + border:
 		return True
 	return False
 
-def point2screen(pos):
-	return Vector(pos[0] - cam[0], pos[1] - cam[1])
+def point2screen(pos, parallax = 1):
+	return Vector(pos[0] - cam[0]/parallax, pos[1] - cam[1]/parallax)
 	
-def point2screeni(pos):
-	return Vector(pos[0] + cam[0], pos[1] + cam[1])
+def point2screeni(pos, parallax = 1):
+	return Vector(pos[0] + cam[0]/parallax, pos[1] + cam[1]/parallax)
 
-cam = Vector()
 def camStep(obj):
 	global cam
 	cam[0] = obj.pos[0] - winWidth/2
@@ -70,9 +81,155 @@ def fuelFormula(cost):
 	global fuel
 	return ((100 - fuel)/100) * (3 * cost + 40) + (fuel / 100)*(cost + 10)
 
-phys = []
-gravityConst = 400
-fuelMult = 0.5
+def explossion(pos, amount=15, power=1):
+	for i in range(amount):
+		Smoke(vectorCopy(pos), vectorUnitRandom()*power)
+
+def string2tup(string):
+	num1, num2 = "", ""
+	numFlag = 1
+	for c in string:
+		if c == "(":
+			continue
+		elif c == ")":
+			continue
+		elif c == ",":
+			numFlag = 2
+		else:
+			if numFlag == 1:
+				num1 += c
+			else:
+				num2 += c
+	return (int(num1), int(num2))
+
+def loadChunks():
+	global fuel, money
+	file = open("chunks.txt")
+	currentChunk = None
+	planets = []
+	world = {}
+	for line in file:
+		if len(line) <= 1:
+			return {}
+		words = line.split()
+		if words[0] == "<chunk>":
+			lineType, arg1 = line.split()
+			currentChunk = string2tup(arg1)
+		elif words[0] == "<mass>":
+			m = Planet(tup2vec(string2tup(words[1])), int(words[2]), words[3])
+			m.location = currentChunk
+			planets.append(m)
+		elif words[0] == "<\chunk>":
+			c = Chunk()
+			c.Id = currentChunk
+			for i in planets:
+				c.planets.append(i)
+			world[currentChunk] = c
+			planets = []
+		elif words[0] == "<player>":
+			r.reposition(Vector(float(words[1]), float(words[2])))
+			fuel = float(words[3]); money = int(words[4])
+	return world
+
+def saveChunks():
+	file = open("chunks.txt", "w")
+	for key in worldChunks:
+		file.write("<chunk>" + " ")
+		file.write("(" + str(key[0]) + "," + str(key[1]) + ")" + " ")
+		file.write("\n")
+		for p in worldChunks[key].planets:
+			file.write("<mass>" + " ")
+			file.write("(" + str(p.pos[0]) + "," + str(p.pos[1]) + ")" + " ")
+			file.write(str(p.radius) + " ")
+			file.write(p.name)
+			file.write("\n")
+		file.write("<\chunk>\n")
+	file.write("<player>" + " ")
+	file.write(str(r.pos[0]) + " " + str(r.pos[1]) + " ")
+	file.write(str(fuel) + " " + str(money))
+	file.close()
+		
+def closestFive(x):
+	return CHUNK_SIZE * round(x / CHUNK_SIZE)
+
+def drawChunkBorder():
+	x = closestFive(upLeft()[0])
+	while x < downRight()[0]:
+		pygame.draw.line(win, (200,200,200), point2screen((x,upLeft()[1])), point2screen((x,downRight()[1])))
+		x += CHUNK_SIZE
+	y = closestFive(upLeft()[1])
+	while y < downRight()[1]:
+		pygame.draw.line(win, (200,200,200), point2screen((upLeft()[0],y)), point2screen((downRight()[0],y)))
+		y += CHUNK_SIZE
+
+def isDiscovered(Id):
+	if Id in worldChunks.keys():
+		return True
+	else:
+		return False
+
+def discover(Id):
+	newChunk = Chunk()
+	newChunk.new(Id)
+	worldChunks[Id] = newChunk
+
+def discoverAround(Id):
+	result = []
+	for i in DISC:
+		Id2discover = (Id[0] + i[0], Id[1] + i[1])
+		if isDiscovered(Id2discover):
+			continue
+		discover(Id2discover)
+		result.append(Id2discover)
+	return result
+
+def actionJobAccept():
+	global currentMenu, jobSurf
+	job = r.docked.job
+	r.currentJob[0] = job
+	r.currentJob[1] = chunkDist(currentPlayerChunk, job.location) * 10
+	currentMenu.destroy()
+	jobSurf = myfont.render("job: " + r.docked.job.name + " " + str(r.docked.job.location), False, WHITE)
+
+def actionJobDeliver():
+	global jobSurf
+	addMoney(r.currentJob[1])
+	r.currentJob[0] = None
+	r.currentJob[1] = 0
+	currentMenu.destroy()
+	jobSurf = None
+
+def actionRefuel():
+	global fuel
+	decMoney(int(fuelFormula(r.docked.fuelCost)))
+	fuel = 100
+	
+def decMoney(amount):
+	global money, moneySurf
+	money -= amount
+	moneySurf = myfont.render(str(money), False, WHITE)
+
+def addMoney(amount):
+	global money, moneySurf
+	money += amount
+	moneySurf = myfont.render(str(money), False, WHITE)
+
+def drawHud():
+	win.blit(gpsStringSurf, (5, winHeight - 15))
+	win.blit(playerChunkSurf, (5 + gpsStringSurf.get_width() + 5, winHeight - 15))
+	win.blit(moneyStringSurf, (150, winHeight - 15))
+	win.blit(moneySurf, (150 + moneyStringSurf.get_width() + 5, winHeight - 15))
+	pygame.draw.line(win, WHITE, (winWidth - 400 - 2, winHeight - 15), (winWidth - 400 - 2, winHeight - 6))
+	pygame.draw.line(win, WHITE, (winWidth - 300 + 1, winHeight - 15), (winWidth - 300 + 1, winHeight - 6))
+	pygame.draw.rect(win, WHITE, ((winWidth - 400, winHeight - 15), (fuel, 10)))	
+	if jobSurf:
+		win.blit(jobSurf, (winWidth - 300 + 15, winHeight - 15))
+
+def upLeft(parralax = 1):
+	return Vector(0,0) + cam/parralax
+
+def downRight(parallax = 1):
+	return Vector(winWidth, winHeight) + cam/parallax
 
 ################################################################################ Classes
 class Smoke:
@@ -113,17 +270,27 @@ class Planet:
 		self.location = None
 		self.fuelCost = randint(1,10)
 		self.job = None
+		self.ring = True if randint(0, 10) == 0 else False
 	def step(self):
 		pass
 	def makeJob(self):
 		chunk = choice(list(worldChunks.values()))
+		while len(chunk) == 0:
+			chunk = choice(list(worldChunks.values()))
 		planet = choice(chunk.planets)
 		self.job = planet
 		
 	def draw(self):
+		if self.ring:
+			pygame.draw.ellipse(whiteBuff, WHITE, (point2screen(self.pos + Vector(-self.radius * 2, -self.radius/2)), (self.radius * 4, self.radius)))
+			pygame.draw.ellipse(whiteBuff, BLACK, (point2screen(self.pos + Vector(-self.radius * 2, -self.radius/2)*(3/4)), (self.radius * 3, self.radius * (3/4))))
 		pygame.draw.circle(whiteBuff, WHITE, point2screen(self.pos), self.radius)
+		
 		if self.selected:
 			pygame.draw.circle(whiteBuff, BLACK, point2screen(self.pos), 10)
+		if self == r.currentJob[0] and floor(globalTime/(fps/2) % 2) == 0:
+			pygame.draw.circle(whiteBuff, BLACK, point2screen(self.pos), 10)
+			
 	def __str__(self):
 		return self.name + " " + str(self.location)
 	def __repr__(self):
@@ -214,10 +381,6 @@ class Rocket:
 			point += self.pos
 		pygame.draw.polygon(whiteBuff, WHITE, [point2screen(i) for i in points])
 
-def explossion(pos, amount=15, power=1):
-	for i in range(amount):
-		Smoke(vectorCopy(pos), vectorUnitRandom()*power)
-
 class Asteroid:
 	_reg = []
 	def __init__(self, pos, vel=None, radius = -1):
@@ -304,7 +467,14 @@ class Chunk:
 		self.Id = Id
 		self.planetise()
 	def planetise(self):
-		amount = randint(2,8)
+		chance = randint(0, 100)
+		if chance >= 0 and chance < 70:
+			amount = randint(2,8)
+		elif chance >= 70 and chance < 80:
+			amount = randint(1,4)
+		else:
+			amount = randint(0,2)
+		
 		for i in range(amount):
 			goodPlace = False
 			while not goodPlace:
@@ -328,7 +498,8 @@ class Chunk:
 			self.timeUpdate = timeClick()
 			for p in self.planets:
 				p.makeJob()
-			
+	def __len__(self):
+		return len(self.planets)
 	def sleep(self):
 		for p in self.planets:
 			phys.remove(p)
@@ -336,159 +507,6 @@ class Chunk:
 		return str(self.Id) + ", " + str(len(self.planets)) + " planets"
 	def __repr__(self):
 		return str(self)
-
-################################################################################ Managers
-starField = []
-
-def starFieldManager():
-	if randint(0,5) == 1:
-		if len(starField) > 20:
-			return
-		place = randint(0,3)
-		if place == 0:
-			star = (Vector(downRight[0], randint(int(upLeft[1]), int(downRight[1]))),randint(1,3))
-		if place == 1:
-			star = (Vector(randint(int(upLeft[0]), int(downRight[0])), upLeft[1]),randint(1,3))
-		if place == 2:
-			star = (Vector(upLeft[0], randint(int(upLeft[1]), int(downRight[1]))),randint(1,3))
-		if place == 3:
-			star = (Vector(randint(int(upLeft[0]), int(downRight[0])), downRight[1]),randint(1,3))
-		starField.append(star)
-
-def drawStarField():
-	for s in starField:
-		pygame.draw.circle(whiteBuff, WHITE, point2screen(s[0]), s[1])
-		if isOutside(s[0]):
-			starField.remove(s)
-
-def asteroidManager():
-	if globalTime % 60 == 0 and randint(0,10) == 1:
-		if len(Asteroid._reg) > 10:
-			return
-		place = randint(0,3)
-		if place == 0:
-			pos = Vector(downRight[0] + 50, randint(int(upLeft[1]), int(downRight[1])))
-		if place == 1:
-			pos = Vector(randint(int(upLeft[0]), int(downRight[0])), upLeft[1] - 50)
-		if place == 2:
-			pos = Vector(upLeft[0] - 50, randint(int(upLeft[1]), int(downRight[1])))
-		if place == 3:
-			pos = Vector(randint(int(upLeft[0]), int(downRight[0])), downRight[1] + 50)
-		Asteroid(pos)
-
-################################################################################ Setup
-CHUNK_SIZE = 1000
-CHUNK_BORDER = 0.1 * CHUNK_SIZE
-
-globalTime = 0
-
-r = Rocket()
-phys.append(r)
-money = 100
-fuel = 100
-
-wakeChunks = []
-
-currentPlayerChunk = (-555, -555)
-
-def string2tup(string):
-	num1, num2 = "", ""
-	numFlag = 1
-	for c in string:
-		if c == "(":
-			continue
-		elif c == ")":
-			continue
-		elif c == ",":
-			numFlag = 2
-		else:
-			if numFlag == 1:
-				num1 += c
-			else:
-				num2 += c
-	return (int(num1), int(num2))
-
-def loadChunks():
-	file = open("chunks.txt")
-	currentChunk = None
-	planets = []
-	world = {}
-	for line in file:
-		if len(line) <= 1:
-			return {}
-		words = line.split()
-		if words[0] == "<chunk>":
-			lineType, arg1 = line.split()
-			currentChunk = string2tup(arg1)
-		elif words[0] == "<mass>":
-			m = Planet(tup2vec(string2tup(words[1])), int(words[2]), words[3])
-			m.location = currentChunk
-			planets.append(m)
-		elif words[0] == "<\chunk>":
-			c = Chunk()
-			c.Id = currentChunk
-			for i in planets:
-				c.planets.append(i)
-			world[currentChunk] = c
-			planets = []
-		elif words[0] == "<player>":
-			r.reposition(Vector(float(words[1]), float(words[2])))
-			
-	return world
-
-def saveChunks():
-	file = open("chunks.txt", "w")
-	for key in worldChunks:
-		file.write("<chunk>" + " ")
-		file.write("(" + str(key[0]) + "," + str(key[1]) + ")" + " ")
-		file.write("\n")
-		for p in worldChunks[key].planets:
-			file.write("<mass>" + " ")
-			file.write("(" + str(p.pos[0]) + "," + str(p.pos[1]) + ")" + " ")
-			file.write(str(p.radius) + " ")
-			file.write(p.name)
-			file.write("\n")
-		file.write("<\chunk>\n")
-	file.write("<player>" + " ")
-	file.write(str(r.pos[0]) + " " + str(r.pos[1]))
-	file.close()
-		
-worldChunks = loadChunks()
-
-def closestFive(x):
-	return CHUNK_SIZE * round(x / CHUNK_SIZE)
-
-def drawChunkBorder():
-	global upLeft, downRight
-	x = closestFive(upLeft[0])
-	while x < downRight[0]:
-		pygame.draw.line(win, (200,200,200), point2screen((x,upLeft[1])), point2screen((x,downRight[1])))
-		x += CHUNK_SIZE
-	y = closestFive(upLeft[1])
-	while y < downRight[1]:
-		pygame.draw.line(win, (200,200,200), point2screen((upLeft[0],y)), point2screen((downRight[0],y)))
-		y += CHUNK_SIZE
-
-def isDiscovered(Id):
-	if Id in worldChunks.keys():
-		return True
-	else:
-		return False
-
-def discover(Id):
-	newChunk = Chunk()
-	newChunk.new(Id)
-	worldChunks[Id] = newChunk
-
-def discoverAround(Id):
-	result = []
-	for i in DISC:
-		Id2discover = (Id[0] + i[0], Id[1] + i[1])
-		if isDiscovered(Id2discover):
-			continue
-		discover(Id2discover)
-		result.append(Id2discover)
-	return result
 
 class Menu:
 	def __init__(self, winPos):
@@ -554,51 +572,62 @@ class Button:
 	def destroy(self):
 		Button._reg.remove(self)
 
-def actionJobAccept():
-	global currentMenu
-	job = r.docked.job
-	r.currentJob[0] = job
-	r.currentJob[1] = chunkDist(currentPlayerChunk, job.location) * 10
-	currentMenu.destroy()
+################################################################################ Managers
+starField = []#star = (pos, parallax, radius)
 
-def actionJobDeliver():
-	addMoney(r.currentJob[1])
-	r.currentJob[0] = None
-	r.currentJob[1] = 0
-	currentMenu.destroy()
+def starFieldManager():
+	if randint(0,4) == 1:
+		if len(starField) > 40:
+			return
+		parallax = uniform(1,6)#choice([2,3,4])
+		radius = randint(1,3)
+		place = randint(0,3)
+		if place == 0:
+			pos = Vector(downRight(parallax)[0], randint(int(upLeft(parallax)[1]), int(downRight(parallax)[1])))
+		if place == 1:
+			pos = Vector(randint(int(upLeft(parallax)[0]), int(downRight(parallax)[0])), upLeft(parallax)[1])
+		if place == 2:
+			pos = Vector(upLeft(parallax)[0], randint(int(upLeft(parallax)[1]), int(downRight(parallax)[1])))
+		if place == 3:
+			pos = Vector(randint(int(upLeft(parallax)[0]), int(downRight(parallax)[0])), downRight(parallax)[1])
+		starField.append((pos, parallax, radius))
 
-def actionRefuel():
-	global fuel
-	decMoney(int(fuelFormula(r.docked.fuelCost)))
-	fuel = 100
-	
-def decMoney(amount):
-	global money, moneySurf
-	money -= amount
-	moneySurf = myfont.render(str(money), False, WHITE)
-def addMoney(amount):
-	global money, moneySurf
-	money += amount
-	moneySurf = myfont.render(str(money), False, WHITE)
+def drawStarField():
+	for s in starField:
+		pygame.draw.circle(whiteBuff, WHITE, point2screen(s[0], s[1]), s[2])
+		if s[0][0] < upLeft(s[1])[0] - 10 or s[0][0] > downRight(s[1])[0] + 10 or s[0][1] < upLeft(s[1])[1] - 10 or s[0][1] > downRight(s[1])[1] + 10:
+			starField.remove(s)
+
+def asteroidManager():
+	if globalTime % 60 == 0 and randint(0,10) == 1:
+		if len(Asteroid._reg) > 10:
+			return
+		place = randint(0,3)
+		if place == 0:
+			pos = Vector(downRight()[0] + 50, randint(int(upLeft()[1]), int(downRight()[1])))
+		if place == 1:
+			pos = Vector(randint(int(upLeft()[0]), int(downRight()[0])), upLeft()[1] - 50)
+		if place == 2:
+			pos = Vector(upLeft()[0] - 50, randint(int(upLeft()[1]), int(downRight()[1])))
+		if place == 3:
+			pos = Vector(randint(int(upLeft()[0]), int(downRight()[0])), downRight()[1] + 50)
+		Asteroid(pos)
+
+################################################################################ Setup
+
+r = Rocket()
+phys.append(r)
+money = 100
+fuel = 100
+
+worldChunks = loadChunks()
 
 currentMenu = None
 playerChunkSurf = None
 moneyStringSurf = myfont.render("money: ", False, WHITE)
 gpsStringSurf = myfont.render("gps: ", False, WHITE)
 moneySurf = myfont.render(str(money), False, WHITE)
-
-def drawHud():
-	win.blit(gpsStringSurf, (5, winHeight - 15))
-	win.blit(playerChunkSurf, (5 + gpsStringSurf.get_width() + 5, winHeight - 15))
-	win.blit(moneyStringSurf, (150, winHeight - 15))
-	win.blit(moneySurf, (150 + moneyStringSurf.get_width() + 5, winHeight - 15))
-	pygame.draw.line(win, WHITE, (winWidth - 400 - 2, winHeight - 15), (winWidth - 400 - 2, winHeight - 6))
-	pygame.draw.line(win, WHITE, (winWidth - 300 + 1, winHeight - 15), (winWidth - 300 + 1, winHeight - 6))
-	pygame.draw.rect(win, WHITE, ((winWidth - 400, winHeight - 15), (fuel, 10)))	
-
-upLeft = None
-downRight = None
-
+jobSurf = None
 ################################################################################ Main Loop
 run = True
 while run:
@@ -614,6 +643,10 @@ while run:
 			# print("mouse pressed once")
 		if event.type == pygame.KEYDOWN:
 			# key pressed once:
+			if event.key == pygame.K_r:
+				decMoney(money)
+				addMoney(100)
+				fuel = 100
 			if event.key == pygame.K_a:
 				for button in Button._reg:
 					if button.key == "a":
@@ -626,7 +659,7 @@ while run:
 						break
 			if event.key == pygame.K_s:
 				print("current job:", r.currentJob)
-				print("ref:", fuelFormula(r.docked.fuelCost))
+				# print("ref:", fuelFormula(r.docked.fuelCost))
 				# print("time click:", timeClick())
 				# print(len(Button._reg))
 				# print("chunk", currentPlayerChunk)
@@ -679,9 +712,6 @@ while run:
 		for d in DISC:
 			Id2wake = (currentPlayerChunk[0] + d[0], currentPlayerChunk[1] + d[1])
 			worldChunks[Id2wake].wake()
-	
-	upLeft = point2screeni((0,0))
-	downRight = point2screeni((winWidth,winHeight))
 	
 	for i in phys:
 		i.step()
